@@ -1,6 +1,6 @@
 /// Single Thread TCP broadcast server
 /// Author: Jun Wang
-/// Mar 8, 2025, Windy, cloudy, cold.
+/// Mar 8, 2025, in Boston, windy, cloudy, cold.
 ///
 ///
 /// This is a single threaded TCP broadcast server, it acheives concurrency by using `tokio` asynchronous programming.
@@ -30,11 +30,14 @@ static mut MESSAGES: [VecDeque<String>; u16::MAX as usize] = {
 };
 
 // `CLIENTS` uses client_id as index to store clients' `OwnedWriteHalf`, None indicates this client is not connected.
+// since we are using client's port number as client identifier and there are u16::MAX port numbers in total,
+// so `CLIENTS` has size u16::MAX.
 static mut CLIENTS: [Option<OwnedWriteHalf>; u16::MAX as usize] = {
     const INIT: Option<OwnedWriteHalf> = None;
     [INIT; u16::MAX as usize]
 };
 
+// "current_thread" sets all `tokio`` tasks run in the same thread as main.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     run_server().await;
@@ -51,7 +54,11 @@ async fn run_server() {
             loop {
                 let (socket, addr) = listener.accept().await.unwrap();
                 println!("connected {} {}", addr.ip(), addr.port());
+
+                // use client's port number as client_id, this is fine in a localhost environment.
                 let client_id = addr.port() as usize;
+
+                // for each client, spawn a asynchronous `handle_client` task within the same thread.
                 tokio::task::spawn_local(async move {
                     handle_client(socket, client_id).await;
                 });
@@ -60,6 +67,12 @@ async fn run_server() {
         .await;
 }
 
+// `handle_client` handles client's connection, for each client connection, it first calls `send_message` to push the `LOGIN` message
+// to the front of this client's message queue, then spawns an asynchronous task handling messages sending to this client,
+// then it loops on:
+//      1. await`s on this client's sending messages,
+//      2. calling `broadcast` for any received messages
+//      3. calling `send_message` to push `ACK:MESSAGE` message to the front of this client's message queue.
 async fn handle_client(socket: TcpStream, client_id: usize) {
     let (reader, writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
@@ -81,7 +94,7 @@ async fn handle_client(socket: TcpStream, client_id: usize) {
     while reader.read_line(&mut line).await.unwrap() > 0 {
         let message = line.trim().to_string();
         let broadcast_message = format!("MESSAGE:{} {}\n", client_id, message);
-        println!("{}", broadcast_message);
+        print!("{}", broadcast_message);
 
         broadcast(client_id, broadcast_message);
 
@@ -103,7 +116,7 @@ async fn handle_client(socket: TcpStream, client_id: usize) {
 // `broadcast`` appends messages to all the remaining clients' message queue.
 fn broadcast(sender_id: usize, message: String) {
     unsafe {
-        // SAFETY: no parallelism in the program and all `MESSAGES` update operation is not `awaited`.
+        // SAFETY: no parallelism in the program and all `MESSAGES` update operation are not `awaited`.
         for (id, queue) in MESSAGES.iter_mut().enumerate() {
             if id != sender_id {
                 queue.push_back(message.clone());
@@ -116,7 +129,7 @@ fn broadcast(sender_id: usize, message: String) {
 // right now, this is the `LOGIN` message and the `ACK:MESSAGE`.
 fn send_message(client_id: usize, message: String) {
     unsafe {
-        // SAFETY: no parallelism in the program and all `MESSAGES` update operation is not `awaited`.
+        // SAFETY: no parallelism in the program and all `MESSAGES` update operations are not `awaited`.
         let queue = &mut MESSAGES[client_id];
         queue.push_front(message);
     }
